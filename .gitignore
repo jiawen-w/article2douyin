@@ -1,0 +1,13 @@
+# 私密配置（含 API Key），绝不提交
+config_local.py
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 运行产物
+_parsing/
+work/
+*.mp4

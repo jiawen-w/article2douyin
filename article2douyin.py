@@ -196,6 +196,27 @@ def extract_json(text):
     return json.loads(m.group(0))
 
 
+def wrap_title(text, max_line=10):
+    """顶部标题手动折行：字号大、CJK 不会自动换行，按字数+标点断成多行(\\N)。"""
+    text = text.replace("{", "").replace("}", "").replace("\n", "").strip()
+    if len(text) <= max_line:
+        return text
+    puncts = "？！?!。.，,、；;：:"
+    lines, cur = [], ""
+    for i, ch in enumerate(text):
+        cur += ch
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        soft = ch in puncts and len(cur) >= max_line * 0.6
+        # 到上限就硬断；但下一个是标点时先不断，让标点收在本行尾
+        hard = len(cur) >= max_line and nxt not in puncts
+        if soft or hard:
+            lines.append(cur)
+            cur = ""
+    if cur:
+        lines.append(cur)
+    return "\\N".join(lines)
+
+
 def split_subtitle_chunks(text, max_chars=14):
     """把一句口播按标点切成短字幕块；超长再切，但不切断英文单词/数字串。"""
 
@@ -631,7 +652,7 @@ WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Sub,{SUB_FONT},78,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,1,0,0,0,100,100,1,0,1,5,2,2,60,60,620,1
-Style: Title,{SUB_FONT},56,&H0000E8FF,&H00FFFFFF,&H00000000,&H80000000,1,0,0,0,100,100,1,0,1,4,2,8,60,60,140,1
+Style: Title,{SUB_FONT},82,&H0000E8FF,&H00FFFFFF,&H00000000,&H80000000,1,0,0,0,100,100,1,0,1,5,2,8,70,70,110,1
 Style: Hook,{SUB_FONT},110,&H000CF0FF,&H000CF0FF,&H00202020,&HA0000000,1,0,0,0,100,100,2,0,1,7,3,5,80,80,0,1
 
 [Events]
@@ -652,7 +673,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             ct += cd
         t += dur
 
-    title_text = title.replace("{", "").replace("}", "")
+    title_text = wrap_title(title)
     lines.insert(0, f"Dialogue: 0,0:00:00.00,{format_ass_time(t)},Title,,0,0,0,,{title_text}")
 
     # 黄金3秒花字：开场弹出 + 轻微放大动画，砸在画面中央偏上

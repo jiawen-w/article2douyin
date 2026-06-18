@@ -584,17 +584,21 @@ def pick_visual(scene, images, videos):
 
 
 def _kenburns_vf(frames, index):
-    """图片 Ken Burns 滤镜串：超采样 + 缓慢线性缩放，防抖。"""
+    """图片 Ken Burns 滤镜串：超采样 + 缓慢线性缩放，防抖。
+    前景按"放大到峰值时刚好铺满"的尺寸缩放，保证整张图全程不被裁掉边缘。"""
     zmax = 1.0 + KB_ZOOM
     if index % 2 == 1:
         zoom_expr = f"min({zmax:.4f},1.0+{KB_ZOOM:.4f}*on/{frames})"
     else:
         zoom_expr = f"max(1.0,{zmax:.4f}-{KB_ZOOM:.4f}*on/{frames})"
     sw, sh = VIDEO_W * KB_SUPERSCALE, VIDEO_H * KB_SUPERSCALE
+    # 前景内缩到 1/zmax，使峰值缩放时图片边缘恰好抵达画面边界而不越界
+    fw = int(VIDEO_W / zmax) // 2 * 2
+    fh = int(VIDEO_H / zmax) // 2 * 2
     return (
         f"[0:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,"
         f"crop={VIDEO_W}:{VIDEO_H},boxblur=30:5[bg];"
-        f"[0:v]scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=decrease[fg];"
+        f"[0:v]scale={fw}:{fh}:force_original_aspect_ratio=decrease[fg];"
         f"[bg][fg]overlay=(W-w)/2:(H-h)/2,scale={sw}:{sh}:flags=bicubic,"
         f"zoompan=z='{zoom_expr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
         f":d={frames}:s={VIDEO_W}x{VIDEO_H}:fps={FPS},format=yuv420p[v]"

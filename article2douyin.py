@@ -59,6 +59,17 @@ BGM_VOLUME  = 0.09                    # BGM 基础音量（人声时还会自动
 KB_ZOOM       = 0.06                  # 整镜放大幅度（6%），幅度小+超采样=不抖
 KB_SUPERSCALE = 4                     # 缩放超采样倍数，消除 zoompan 像素抖动
 
+# 发布封面：主图铺满 + 大标题，拼一张 3:4 封面图（抖音/小红书/B站上传用）
+MAKE_COVER     = True
+COVER_W, COVER_H = 1080, 1440         # 封面比例 3:4（视频本身仍是 9:16）
+COVER_FONTS = [                       # Pillow 画中文用的字体（按可用性挑第一个）
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+]
+COVER_ACCENT = (255, 210, 0)          # 标签/高亮强调色（亮黄）
+
 SUB_FONT    = "PingFang SC"
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -736,6 +747,121 @@ def assemble(clips, ass, workdir, out_path, total_dur):
     run_cmd(cmd)
 
 
+def _cover_font(size):
+    from PIL import ImageFont
+    for p in COVER_FONTS:
+        if Path(p).exists():
+            try:
+                return ImageFont.truetype(p, size)
+            except Exception:
+                continue
+    return ImageFont.load_default()
+
+
+def _wrap_by_width(draw, text, font, max_w):
+    """按像素宽度把一行中文标题折成多行。"""
+    lines, cur = [], ""
+    for ch in text:
+        if ch == "\n":
+            lines.append(cur); cur = ""; continue
+        if draw.textlength(cur + ch, font=font) > max_w and cur:
+            lines.append(cur); cur = ch
+        else:
+            cur += ch
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _cover_hero(data, images, videos, workdir):
+    """挑封面主图：优先第一个有配图的镜头；没有就从第一条视频抽帧；再兜底任意素材。"""
+    for s in data["scenes"]:
+        iidx = s.get("image")
+        if iidx and 1 <= iidx <= len(images) and images[iidx - 1]:
+            return images[iidx - 1]
+    for s in data["scenes"]:
+        cidx = s.get("clip")
+        if cidx and 1 <= cidx <= len(videos) and videos[cidx - 1]:
+            t = video_thumbnail(videos[cidx - 1], workdir, 99)
+            if t:
+                return t
+    for p in images:
+        if p:
+            return p
+    for v in videos:
+        t = video_thumbnail(v, workdir, 99) if v else None
+        if t:
+            return t
+    return None
+
+
+def build_cover(data, images, videos, workdir, out_dir):
+    """主图铺满 + 顶部标签 + 大标题，拼一张 1080x1440（3:4）发布封面图。"""
+    ensure_package("Pillow", "PIL")
+    from PIL import Image, ImageDraw, ImageOps, ImageFilter
+
+    W, H = COVER_W, COVER_H
+    hero = _cover_hero(data, images, videos, workdir)
+
+    # 1) 底：主图 cover 铺满；没有主图就用深色渐变
+    if hero:
+        try:
+            base = ImageOps.fit(Image.open(hero).convert("RGB"), (W, H),
+                                method=Image.LANCZOS).convert("RGBA")
+        except Exception:
+            hero = None
+    if not hero:
+        base = Image.new("RGB", (W, H), (18, 22, 42)).convert("RGBA")
+
+    # 2) 顶/底渐变压暗，保证文字清晰
+    grad = Image.new("L", (1, H), 0)
+    gpx = grad.load()
+    for y in range(H):
+        t = y / H
+        top = max(0, 1 - t / 0.42) * 235          # 上 42% 压暗放标题
+        bot = max(0, (t - 0.72) / 0.28) * 170      # 下 28% 轻压
+        gpx[0, y] = int(min(235, top + bot))
+    alpha = grad.resize((W, H))
+    dark = Image.new("RGBA", (W, H), (8, 10, 20, 0))
+    dark.putalpha(alpha)
+    base = Image.alpha_composite(base, dark)
+    draw = ImageDraw.Draw(base)
+
+    # 3) 顶部强调标签：取第一个话题词，没有就用通用词
+    tags = data.get("hashtags") or []
+    tag = ("# " + tags[0]) if tags else "热点速看"
+    f_tag = _cover_font(40)
+    tw = draw.textlength(tag, font=f_tag)
+    pad, tag_y = 26, 58
+    draw.rounded_rectangle([60, tag_y, 60 + tw + pad * 2, tag_y + 68],
+                           radius=18, fill=COVER_ACCENT)
+    draw.text((60 + pad, tag_y + 34), tag, font=f_tag, fill=(20, 20, 20), anchor="lm")
+
+    # 4) 大标题（白字粗描边，强冲击）；标题里若太长自动折行，最多 4 行
+    title = (data.get("title") or "").replace("\n", "")
+    f_title = _cover_font(96)
+    lines = _wrap_by_width(draw, title, f_title, W - 120)[:4]
+    y = tag_y + 110
+    for ln in lines:
+        draw.text((60, y), ln, font=f_title, fill=(255, 255, 255),
+                  anchor="la", stroke_width=4, stroke_fill=(0, 0, 0))
+        y += 116
+
+    # 5) 花字副标题（黄色高亮，呼应视频开场钩子）
+    hook = (data.get("hook_text") or "").replace("\n", "")
+    if hook:
+        f_hook = _cover_font(52)
+        for ln in _wrap_by_width(draw, hook, f_hook, W - 120)[:2]:
+            draw.text((60, y + 8), ln, font=f_hook, fill=COVER_ACCENT,
+                      anchor="la", stroke_width=3, stroke_fill=(0, 0, 0))
+            y += 64
+
+    out = out_dir / "封面.jpg"
+    base.convert("RGB").save(out, quality=92)
+    print(f"[cover] 发布封面已生成：{out.name}（{'主图铺满' if hero else '纯色底'}）")
+    return out
+
+
 def write_publish_info(data, out_dir):
     info = out_dir / "发布文案.txt"
     tags = " ".join(f"#{t}" for t in data.get("hashtags", []))
@@ -809,10 +935,13 @@ def run(source):
     out_path = out_dir / f"{slugify(data['title'])}.mp4"
     assemble(clips, ass, workdir, out_path, sum(durations))
     info = write_publish_info(data, out_dir)
+    cover = build_cover(data, images, videos, workdir, out_dir) if MAKE_COVER else None
 
     total_dur = sum(durations)
     print(f"\n✅ 完成！时长 {total_dur:.0f} 秒")
     print(f"   视频：{out_path}")
+    if cover:
+        print(f"   封面：{cover}")
     print(f"   文案：{info}")
     return out_path
 
